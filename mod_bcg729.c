@@ -27,6 +27,11 @@
  *
  */
 
+#define SIGNAL_SAMPLES 80
+#define SIGNAL_FRAME_SIZE 160
+#define BITSTREAM_FRAME_SIZE 10
+#define NOISE_BITSTREAM_FRAME_SIZE 2
+
 #include "switch.h"
 #include "bcg729/encoder.h"
 #include "bcg729/decoder.h"
@@ -50,15 +55,14 @@ static switch_status_t switch_bcg729_init(switch_codec_t *codec, switch_codec_fl
 	if (!(encoding || decoding) || (!(context = switch_core_alloc(codec->memory_pool, sizeof(struct bcg729_context))))) {
 		return SWITCH_STATUS_FALSE;
 	} else {
-        /*
 		if (codec->fmtp_in) {
 			codec->fmtp_out = switch_core_strdup(codec->memory_pool, codec->fmtp_in);
 		}
-        */
-		codec->fmtp_out = switch_core_strdup(codec->memory_pool, "annexb=no");
+        
+		//codec->fmtp_out = switch_core_strdup(codec->memory_pool, "annexb=no");
 
 		if (encoding) {
-            context->encoder_object = initBcg729EncoderChannel();
+            context->encoder_object = initBcg729EncoderChannel(0);
 		}
 
 		if (decoding) {
@@ -95,27 +99,31 @@ static switch_status_t switch_bcg729_encode(switch_codec_t *codec,
 		return SWITCH_STATUS_FALSE;
 	}
 
-	if (decoded_data_len % 160 == 0) {
-		uint32_t new_len = 0;
-		int16_t *ddp = decoded_data;
-		uint8_t *edp = encoded_data;
-		int x;
-		int loops = (int) decoded_data_len / 160;
-
-		for (x = 0; x < loops && new_len < *encoded_data_len; x++) {
-            bcg729Encoder(context->encoder_object, ddp, edp);
-			edp += 10;
-			ddp += 80;
-			new_len += 10;
-		}
-
-		if (new_len <= *encoded_data_len) {
-			*encoded_data_len = new_len;
-		} else {
-			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "buffer overflow!!! %u >= %u\n", new_len, *encoded_data_len);
-			return SWITCH_STATUS_FALSE;
-		}
+	if (decoded_data_len % SIGNAL_FRAME_SIZE != 0) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "not dividable by 160 abort!\n");
+		return SWITCH_STATUS_FALSE;
 	}
+
+	uint32_t new_len = 0;
+	int16_t *ddp = decoded_data;
+	uint8_t *edp = encoded_data;
+	int loops = (int) decoded_data_len / SIGNAL_FRAME_SIZE;
+
+	for (int x = 0; x < loops && new_len < *encoded_data_len; x++) {
+			uint8_t frameSize;
+            bcg729Encoder(context->encoder_object, ddp, edp, &frameSize);
+			ddp += SIGNAL_SAMPLES;
+			new_len += frameSize;
+			edp += frameSize;
+	}
+
+	if (new_len <= *encoded_data_len) {
+		*encoded_data_len = new_len;
+	} else {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "buffer overflow!!! %u >= %u\n", new_len, *encoded_data_len);
+		return SWITCH_STATUS_FALSE;
+	}
+
 	return SWITCH_STATUS_SUCCESS;
 }
 
@@ -135,29 +143,31 @@ static switch_status_t switch_bcg729_decode(switch_codec_t *codec,
     }
 
     int framesize;
-    int x;
     uint32_t new_len = 0;
     uint8_t *edp = encoded_data;
     int16_t *ddp = decoded_data;
-
+	uint8_t isSID = 0;
+	
     if (encoded_data_len == 0) {  /* Native PLC interpolation */
-        bcg729Decoder(context->decoder_object, NULL, 1, ddp);
-	    ddp += 80; 
-        decoded_data_len = (uint32_t *) 160;
+        bcg729Decoder(context->decoder_object, NULL, 0, 1, 0, 0, ddp);
+	    ddp += SIGNAL_SAMPLES; 
+        *decoded_data_len = SIGNAL_FRAME_SIZE;
 	    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "g729 zero length frame\n");
         return SWITCH_STATUS_SUCCESS;
     }
 
-    for(x = 0; x < encoded_data_len && new_len < *decoded_data_len; x += framesize) {
-        if(encoded_data_len - x < 8)
-            framesize = 2;  /* SID */
-        else
-            framesize = 10; /* regular 729a frame */
+    for(int x = 0; x < encoded_data_len && new_len < *decoded_data_len; x += framesize) {
+		isSID = (encoded_data_len - x == NOISE_BITSTREAM_FRAME_SIZE) ? 1 : 0;
+		if (isSID == 1) {
+		    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "SID PACKET\n");
+		}
 
-        bcg729Decoder(context->decoder_object, edp, 0, ddp);
-	    ddp += 80;
+        framesize = (isSID==1) ? NOISE_BITSTREAM_FRAME_SIZE : BITSTREAM_FRAME_SIZE;
+
+        bcg729Decoder(context->decoder_object, edp, encoded_data_len, 0, isSID, 0, ddp);
+	    ddp += SIGNAL_SAMPLES;
 	    edp += framesize;
-	    new_len += 160;
+	    new_len += SIGNAL_FRAME_SIZE;
     }
 
     if (new_len <= *decoded_data_len) {
@@ -173,7 +183,7 @@ static switch_status_t switch_bcg729_decode(switch_codec_t *codec,
 SWITCH_MODULE_LOAD_FUNCTION(mod_bcg729_load)
 {
 	switch_codec_interface_t *codec_interface;
-	int mpf = 10000, spf = 80, bpf = 160, ebpf = 10, count;
+	int mpf = 10000, spf = SIGNAL_SAMPLES, bpf = SIGNAL_FRAME_SIZE, ebpf = 10, count;
 
 	/* connect my internal structure to the blank pointer passed to me */
 	*module_interface = switch_loadable_module_create_module_interface(pool, modname);
@@ -183,7 +193,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_bcg729_load)
 	    switch_core_codec_add_implementation(pool, codec_interface, SWITCH_CODEC_TYPE_AUDIO, 
                                                 18, /* the IANA code number */
                                                 "G729", /* the IANA code name */
-                                                "annexb=no", /* default fmtp to send (can be overridden by the init function) */
+                                              	NULL, /* default fmtp to send (can be overridden by the init function) */
                                                 8000, /* samples transferred per second */
                                                 8000, /* actual samples transferred per second */
                                                 8000, /* bits transferred per second */

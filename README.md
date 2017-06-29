@@ -9,11 +9,8 @@ Please see http://www.linphone.org/eng/documentation/dev/bcg729.html for further
 This code is a modified version of fsg729 ( https://code.google.com/p/fsg729/ ) which
 uses the Intel IPP libraries, modified to use a different code and get rid of Intel stuff.
 
-To use G.729 or G.723.1 you may need to pay a royalty fee.
-Please see http://www.sipro.com for details.
-Please note that this code is available for you to download for education purposes 
-only and if a patent exists in your country for G.729 then you should contact 
-the owner of that patent and request their permission before executing the code.
+As of January 1, 2017 the patent terms of most Licensed Patents under the G.729 Consortium have expired.
+For more informations visit: [http://www.sipro.com/G729.html](http://www.sipro.com/G729.html)
 
 You can get a licensed, faster and supported G.729A codec by purchasing licenses
 directly from FreeSWITCH guys http://www.freeswitch.org .
